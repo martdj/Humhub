@@ -1,0 +1,241 @@
+name: humhub
+
+networks:
+  proxy:
+    driver: bridge
+  app-net:
+    driver: bridge
+
+# Bind mounts to /local/humhub/data/...
+volumes:
+  db-data:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/db-data }
+  config:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/config }
+  uploads:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/uploads }
+  modules:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/modules }
+  logs:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/logs }
+  searchdb:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/searchdb }
+  themes:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/themes }
+  onlyoffice_data:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/onlyoffice/data }
+  onlyoffice_log:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/onlyoffice/log }
+  backups:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/backups }
+  traefik_letsencrypt:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/traefik/letsencrypt }
+
+services:
+  traefik:
+    image: traefik:v2.11
+    restart: unless-stopped
+    command:
+      - --providers.docker=true
+      - --providers.docker.exposedbydefault=false
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
+      # ACME (Let's Encrypt)
+      - --certificatesresolvers.letsencrypt.acme.email=${LE_EMAIL}
+      - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
+      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      # Logging
+      - --accesslog=true
+      - --log.level=INFO
+      # Staging (optional); only use with staging-flag in .env and uncomment the next line:
+      # - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+    networks:
+      - proxy
+    labels:
+      - traefik.enable=true
+
+      # HTTP -> HTTPS redirect (all hosts)
+      - traefik.http.routers.redirect-web.rule=HostRegexp(`{host:.+}`)
+      - traefik.http.routers.redirect-web.entrypoints=web
+      - traefik.http.routers.redirect-web.middlewares=redirect-to-https
+      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
+
+      # Reusable middlewares
+      - traefik.http.middlewares.security-headers.headers.stsSeconds=31536000
+      - traefik.http.middlewares.security-headers.headers.stsIncludeSubdomains=true
+      - traefik.http.middlewares.security-headers.headers.stsPreload=true
+      - traefik.http.middlewares.security-headers.headers.contentTypeNosniff=true
+      - traefik.http.middlewares.security-headers.headers.browserXssFilter=true
+      - traefik.http.middlewares.security-headers.headers.referrerPolicy=no-referrer-when-downgrade
+      - traefik.http.middlewares.security-headers.headers.frameDeny=true
+      - traefik.http.middlewares.compress.compress=true
+
+  mariadb:
+    image: mariadb:11.4
+    restart: unless-stopped
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    environment:
+      - MARIADB_ROOT_PASSWORD=${MARIADB_ROOT_PASSWORD}
+      - MARIADB_DATABASE=${MARIADB_DATABASE}
+      - MARIADB_USER=${MARIADB_USER}
+      - MARIADB_PASSWORD=${MARIADB_PASSWORD}
+      - TZ=${TZ}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - app-net
+
+  humhub:
+    image: mriedmann/humhub:${HUMHUB_VERSION}
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+    environment:
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_NAME=${MARIADB_DATABASE}
+      - DB_USER=${MARIADB_USER}
+      - DB_PASSWORD=${MARIADB_PASSWORD}
+      - DB_DRIVER=mysql
+      - TZ=${TZ}
+      - NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}
+      - NGINX_KEEPALIVE_TIMEOUT=${NGINX_KEEPALIVE_TIMEOUT}
+      # --- parameters for compatibiliyu with Humhub's own container image ---
+      - HUMHUB_DB_HOST=mariadb
+      - HUMHUB_DB_PORT=3306
+      - HUMHUB_DB_NAME=${MARIADB_DATABASE}
+      - HUMHUB_DB_USER=${MARIADB_USER}
+      - HUMHUB_DB_PASSWORD=${MARIADB_PASSWORD}
+      - HUMHUB_REVERSEPROXY_WHITELIST=${REVERSEPROXY_WHITELIST}
+    volumes:
+      - config:/var/www/localhost/htdocs/protected/config
+      - uploads:/var/www/localhost/htdocs/uploads
+      - modules:/var/www/localhost/htdocs/protected/modules
+      - logs:/var/www/localhost/htdocs/protected/runtime/logs
+      - searchdb:/var/www/localhost/htdocs/protected/runtime/searchdb
+      - themes:/var/www/localhost/htdocs/themes
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/ || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+    networks:
+      - app-net
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.humhub.rule=Host(`${HUMHUB_HOST}`)
+      - traefik.http.routers.humhub.entrypoints=websecure
+      - traefik.http.routers.humhub.tls.certresolver=letsencrypt
+      - traefik.http.routers.humhub.middlewares=security-headers,compress
+      - traefik.http.services.humhub.loadbalancer.server.port=80
+
+  humhub-cron:
+    image: mriedmann/humhub:${HUMHUB_VERSION}
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+    command: ["sh", "-c", "while true; do php /var/www/localhost/htdocs/protected/yii queue/run; php /var/www/localhost/htdocs/protected/yii cron/run; sleep 60; done"]
+    environment:
+      - DB_HOST=mariadb
+      - DB_PORT=3306
+      - DB_NAME=${MARIADB_DATABASE}
+      - DB_USER=${MARIADB_USER}
+      - DB_PASSWORD=${MARIADB_PASSWORD}
+      - DB_DRIVER=mysql
+      - HUMHUB_DB_HOST=mariadb
+      - HUMHUB_DB_PORT=3306
+      - HUMHUB_DB_NAME=${MARIADB_DATABASE}
+      - HUMHUB_DB_USER=${MARIADB_USER}
+      - HUMHUB_DB_PASSWORD=${MARIADB_PASSWORD}
+      - TZ=${TZ}
+    volumes:
+      - config:/var/www/localhost/htdocs/protected/config
+      - uploads:/var/www/localhost/htdocs/uploads
+      - modules:/var/www/localhost/htdocs/protected/modules
+      - logs:/var/www/localhost/htdocs/protected/runtime/logs
+      - searchdb:/var/www/localhost/htdocs/protected/runtime/searchdb
+      - themes:/var/www/localhost/htdocs/themes
+    networks:
+      - app-net
+
+  onlyoffice:
+    image: onlyoffice/documentserver:${ONLYOFFICE_VERSION}
+    restart: unless-stopped
+    environment:
+      - JWT_ENABLED=true
+      - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
+      - JWT_HEADER=Authorization
+      - TZ=${TZ}
+    volumes:
+      - onlyoffice_data:/var/lib/onlyoffice
+      - onlyoffice_log:/var/log/onlyoffice
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+    networks:
+      - app-net
+      - proxy
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.onlyoffice.rule=Host(`${ONLYOFFICE_HOST}`)
+      - traefik.http.routers.onlyoffice.entrypoints=websecure
+      - traefik.http.routers.onlyoffice.tls.certresolver=letsencrypt
+      - traefik.http.routers.onlyoffice.middlewares=security-headers,compress
+      - traefik.http.services.onlyoffice.loadbalancer.server.port=80
+
+  smtp:
+    image: boky/postfix:latest
+    restart: unless-stopped
+    environment:
+      - RELAYHOST=${SMTP_RELAY_HOST}
+      - RELAYHOST_PORT=${SMTP_RELAY_PORT}
+      - RELAYHOST_USERNAME=${SMTP_RELAY_USER}
+      - RELAYHOST_PASSWORD=${SMTP_RELAY_PASSWORD}
+      - TLS_POLICY=encrypt
+      - SERVER_HOSTNAME=${SMTP_HELO_NAME}
+      - TZ=${TZ}
+      - ALLOWED_SENDER_DOMAINS=martdj.nl
+    networks:
+      - app-net
+    # Don't publish ports. HumHub internally uses 'smtp:25'
+
+  backup:
+    image: fradelg/mysql-cron-backup:latest
+    restart: unless-stopped
+    depends_on:
+      - mariadb
+    environment:
+      - MYSQL_HOST=mariadb
+      - MYSQL_USER=${MARIADB_USER}
+      - MYSQL_PASS=${MARIADB_PASSWORD}
+      - MYSQL_DB=${MARIADB_DATABASE}
+      - CRON_TIME=${BACKUP_SCHEDULE}
+      - MYSQLDUMP_OPTS=--single-transaction --routines --events
+      - TZ=${TZ}
+    volumes:
+      - backups:/backup
+    networks:
+      - app-net
