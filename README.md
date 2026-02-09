@@ -20,17 +20,12 @@ Or using wget:
 ```bash
 wget -qO- https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/prepare_system.env | sudo bash
 ```
-What the script does
-
-Installs Docker and Docker Compose (if not already installed)
-
-Enables and starts the Docker service
-
-Configures SELinux for container usage (if enabled)
-
-Creates a dedicated humhub system user
-
-Creates all required data directories under /local/humhub
+What the script does:
+- Installs Docker and Docker Compose (if not already installed)
+- Enables and starts the Docker service
+- Configures SELinux for container usage (if enabled)
+- Creates a dedicated humhub system user
+- Creates all required data directories under /local/humhub
 
 Downloads:
 - .env
