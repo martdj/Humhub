@@ -48,7 +48,7 @@ flowchart TD
 
     subgraph Aux
         O[OnlyOffice Document Server]
-        S[SMTP Relay (boky/postfix)]
+        S[SMTP Relay - boky/postfix]
         B[MySQL Backup Cron]
     end
 
