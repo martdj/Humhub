@@ -1,0 +1,192 @@
+# HumHub Docker Deployment (IPv4/IPv6 Ready)
+
+Een productieklare HumHub‑installatie op Docker, inclusief MariaDB Galera-optie, Redis, Cron, Traefik 3 reverse proxy, Garage S3‑storage en automatische installatieconfiguratie.
+
+## Inhoud
+- Overzicht
+- Architectuurdiagram
+- Features
+- Voorwaarden
+- Installatieprocedure
+- Configuratie
+- IPv6 Consideraties
+- Services
+- Persistentie
+- Updates
+- Troubleshooting
+
+## Overzicht
+Deze setup biedt een volledig gecontaineriseerde HumHub‑omgeving geoptimaliseerd voor stabiliteit, IPv4/IPv6‑bereikbaarheid, performance en beheerbaarheid. Inclusief een voorbereidingsscript dat de benodigde directories, permissies, .env‑bestand en installatieconfig genereert.
+
+## Architectuurdiagram
+```mermaid
+flowchart TD
+
+    subgraph Proxy
+        T[Traefik 3 Reverse Proxy]
+    end
+
+    subgraph App
+        H[HumHub PHP-FPM]
+        C[Cron Worker]
+    end
+
+    subgraph DB
+        M[MariaDB]
+        R[Redis Cache]
+    end
+
+    subgraph Storage
+        G[Garage S3 Bucket]
+    end
+
+    T --> H
+    H --> M
+    H --> R
+    H --> G
+    C --> M
+    C --> R
+```
+
+## Features
+- Productierijp Docker Compose v3.8 platform
+- Traefik 3.6 met automatische Let’s Encrypt-certificaten
+- Ondersteunt IPv4 én IPv6
+- Volledig scriptgestuurde installatieconfig (`installation_config.php`)
+- Automatisch .env‑generatie
+- Losse cron‑container voor achtergrondtaken
+- Optionele Galera clustering
+- S3‑opslag (Garage) voor uploads
+- Schone directory‑structuur in `/local/humhub`
+
+## Voorwaarden
+- Linux host (bij voorkeur Debian/Ubuntu/Alma/Rocky)
+- Docker Engine + Docker Compose V2
+- Openstaande poorten: 80/443 (IPv4 + IPv6)
+- Een DNS-naam die wijst naar jouw host
+- Een gebruiker `humhub` die toegang heeft tot de stack
+
+## Installatie
+
+### 1) Repository clonen
+```bash
+git clone https://github.com/martdj/HumHub.git
+cd HumHub
+```
+
+### 2) Host voorbereiden
+Gebruik het script `prepare_system.sh`:
+
+```bash
+sudo ./prepare_system.sh
+```
+
+Dit script:
+- maakt `/local/humhub/*` directories aan  
+- zet correcte permissies  
+- genereert `.env`  
+- genereert `installation_config.php`  
+- controleert firewall  
+- installeert basispackages  
+- maakt gebruiker `humhub` klaar voor gebruik  
+
+### 3) Stack starten voor installatie
+Start alleen de basisservices:
+
+```bash
+sudo -u humhub docker compose up -d mariadb redis humhub
+```
+
+Wanneer HumHub klaar is, open de installatiepagina in je browser en login met:
+
+- **Admin login:** waarde uit `.env`
+- **Admin wachtwoord:** waarde uit `.env`
+
+### 4) Cron starten na succesvolle installatie
+```bash
+sudo -u humhub docker compose up -d humhub-cron
+```
+
+### 5) Traefik starten voor publieke toegang
+```bash
+sudo -u humhub docker compose up -d traefik
+```
+
+## Configuratie
+Alle instellingen zijn terug te vinden in:
+
+- `.env`
+- `docker-compose.yml`
+- `data/humhub/config/installation_config.php`
+
+## IPv6 Consideraties
+Deze stack ondersteunt:
+- **Host‑mode IPv6 voor Traefik**
+- **Docker bridge IPv6** (optioneel)
+- Reverse proxy passthrough voor upstream IPv6‑backends
+- Let’s Encrypt DNS‑01/HTTP‑01 op IPv6
+
+Voor volledig IPv6:
+- DNS moet een **AAAA‑record** hebben
+- Je provider moet native IPv6 leveren
+
+## Services
+
+| Service | Doel | Bereikbaar via |
+|--------|------|----------------|
+| Traefik | Reverse proxy & TLS | :80 / :443 |
+| HumHub | Applicatie | via Traefik |
+| MariaDB | Database | internal |
+| Redis | Cache | internal |
+| Cron | Achtergrondtaken | internal |
+| Garage | S3 backend | internal/external |
+
+## Persistentie
+
+Alle data wordt opgeslagen in `/local/humhub`:
+
+```
+/local/humhub/humhub
+/local/humhub/db
+/local/humhub/redis
+/local/humhub/garage
+/local/humhub/traefik
+```
+
+## Updates
+
+### App containers
+```bash
+sudo -u humhub docker compose pull
+sudo -u humhub docker compose up -d
+```
+
+### Host OS
+Gebruik de package manager van je distributie.
+
+## Troubleshooting
+
+### 502 / 504 via Traefik
+- Controleer of HumHub actief is:
+```bash
+docker compose logs humhub
+```
+
+### Database-connectieproblemen
+- Controleer `.env`
+- Controleer `installation_config.php`
+
+### Cron draait niet
+```bash
+docker compose logs humhub-cron
+```
+
+### IPv6 werkt extern niet
+- AAAA-record correct?  
+- Firewall open voor v6?  
+- Provider levert native v6?
+
+---
+
+Klaar voor gebruik.  
+Contribute en verbeteringen blijven welkom!
