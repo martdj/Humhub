@@ -24,7 +24,7 @@ DATA_DIR="$HUMHUB_DIR/data"
 
 ENV_URL="https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/.env"
 COMPOSE_URL="https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/docker-compose.yml"
-SCRIPT_URL="https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/prepare_system.env"
+SCRIPT_URL="https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/prepare_system.sh"
 SCRIPT_PATH="$HUMHUB_DIR/prepare_system.sh"
 
 echo "=================================================="
