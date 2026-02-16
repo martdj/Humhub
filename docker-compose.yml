@@ -1,96 +1,103 @@
 name: humhub
 
+# ==================================================
+# NETWORKS
+# ==================================================
 networks:
   proxy:
     driver: bridge
   app-net:
     driver: bridge
 
-# Bind mounts to /local/humhub/data/...
+# ==================================================
+# VOLUMES (host bind mounts under /local/humhub/data)
+# ==================================================
 volumes:
   db-data:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/db-data }
+
   config:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/config }
+
   uploads:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/uploads }
+
   modules:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/modules }
+
   logs:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/logs }
-  searchdb:
-    driver: local
-    driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/searchdb }
+
   themes:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/humhub/themes }
+
   onlyoffice_data:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/onlyoffice/data }
+
   onlyoffice_log:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/onlyoffice/log }
+
   backups:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/backups }
+
   traefik_letsencrypt:
     driver: local
     driver_opts: { type: none, o: bind, device: /local/humhub/data/traefik/letsencrypt }
 
+  redis_data:
+    driver: local
+    driver_opts: { type: none, o: bind, device: /local/humhub/data/redis }
+
+# ==================================================
+# SERVICES
+# ==================================================
 services:
+
+  # ------------------------------------------------
+  # REVERSE PROXY (Traefik 3.6)
+  # ------------------------------------------------
   traefik:
-    image: traefik:v2.11
+    image: traefik:v3.6
     restart: unless-stopped
+    network_mode: host
+    environment:
+      - TZ=${TZ}
     command:
+      # Providers
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+
+      # EntryPoints
       - --entrypoints.web.address=[::]:80
       - --entrypoints.websecure.address=[::]:443
-      # ACME (Let's Encrypt)
+
+      # ACME (Let's Encrypt) - Traefik 3 style
       - --certificatesresolvers.letsencrypt.acme.email=${LE_EMAIL}
       - --certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge=true
-      - --certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web
+      - --certificatesresolvers.letsencrypt.acme.httpChallenge.entryPoint=web
+      # Staging toggle is handled by prepare_system.sh (adds/removes caserver flag)
+      # # - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
+
       # Logging
       - --accesslog=true
       - --log.level=INFO
-      # Staging (optional); only use with staging-flag in .env and uncomment the next line:
-#      - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory
-#    ports:
-#      - "80:80"
-#      - "443:443"
-    environment:
-      - TZ=${TZ}
+
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - traefik_letsencrypt:/letsencrypt
-#    networks:
-#      - proxy
-    network_mode: host
-#    labels:
-#      - traefik.enable=true
 
-      # HTTP -> HTTPS redirect (all hosts)
-#      - traefik.http.routers.redirect-web.rule=HostRegexp(`{host:.+}`)
-#      - traefik.http.routers.redirect-web.entrypoints=web
-#      - traefik.http.routers.redirect-web.middlewares=redirect-to-https
-#      - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
-
-      # Reusable middlewares
-#      - traefik.http.middlewares.security-headers.headers.stsSeconds=31536000
-#      - traefik.http.middlewares.security-headers.headers.stsIncludeSubdomains=true
-#      - traefik.http.middlewares.security-headers.headers.stsPreload=true
-#      - traefik.http.middlewares.security-headers.headers.contentTypeNosniff=true
-#      - traefik.http.middlewares.security-headers.headers.browserXssFilter=true
-#      - traefik.http.middlewares.security-headers.headers.referrerPolicy=no-referrer-when-downgrade
-#      - traefik.http.middlewares.security-headers.headers.frameDeny=true
-#      - traefik.http.middlewares.compress.compress=true
-
+  # ------------------------------------------------
+  # DATABASE (MariaDB)
+  # ------------------------------------------------
   mariadb:
     image: mariadb:11.4
     restart: unless-stopped
@@ -106,54 +113,60 @@ services:
     networks:
       - app-net
 
+  # ------------------------------------------------
+  # HUMHUB (Main web application)
+  # ------------------------------------------------
   humhub:
     image: mriedmann/humhub:${HUMHUB_VERSION}
     restart: unless-stopped
     depends_on:
       - mariadb
+      - redis
     environment:
-#      - DB_HOST=mariadb
-#      - DB_PORT=3306
-#      - DB_NAME=${MARIADB_DATABASE}
-#      - DB_USER=${MARIADB_USER}
-#      - DB_PASSWORD=${MARIADB_PASSWORD}
-#      - DB_DRIVER=mysql
       - TZ=${TZ}
-      - NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}
-      - NGINX_KEEPALIVE_TIMEOUT=${NGINX_KEEPALIVE_TIMEOUT}
-      # --- parameters for compatibiliyu with Humhub's own container image ---
+      - HUMHUB_PROTO=https
+      - HUMHUB_HOST=${HUMHUB_HOST}
+      - HUMHUB_BASE_URL=${HUMHUB_BASE_URL}
+
+      # Database
       - HUMHUB_DB_HOST=mariadb
       - HUMHUB_DB_PORT=3306
       - HUMHUB_DB_NAME=${MARIADB_DATABASE}
       - HUMHUB_DB_USER=${MARIADB_USER}
       - HUMHUB_DB_PASSWORD=${MARIADB_PASSWORD}
-      - HUMHUB_AUTO_INSTALL=1
-      - HUMHUB_DEBUG=0
-      - HUMHUB_PROTO=https
-      - HUMHUB_HOST=${HUMHUB_HOST}
-      - HUMHUB_BASE_URL=${HUMHUB_BASE_URL}
-#      - HUMHUB_REVERSEPROXY_WHITELIST=${REVERSEPROXY_WHITELIST}
-      - HUMHUB_CACHE_EXPIRE_TIME=3600
-      - HUMHUB_CACHE_CLASS=yii\redis\Cache
-      - HUMHUB_QUEUE_CLASS=humhub\modules\queue\driver\Redis
+
+      # Redis
       - HUMHUB_REDIS_HOSTNAME=redis
       - HUMHUB_REDIS_PORT=6379
       - HUMHUB_REDIS_PASSWORD=${REDIS_PASSWORD}
+      - HUMHUB_CACHE_CLASS=yii\redis\Cache
+      - HUMHUB_CACHE_EXPIRE_TIME=3600
+      - HUMHUB_QUEUE_CLASS=humhub\modules\queue\driver\Redis
+
+      # Auto-install
+      - HUMHUB_AUTO_INSTALL=1
+      - HUMHUB_DEBUG=0
+
+      # Nginx/PHP settings
+      - NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}
+      - NGINX_KEEPALIVE_TIMEOUT=${NGINX_KEEPALIVE_TIMEOUT}
+
+      # Admin initialization
+      - HUMHUB_ADMIN_USERNAME=${HUMHUB_ADMIN_USERNAME}
+      - HUMHUB_ADMIN_EMAIL=${HUMHUB_ADMIN_EMAIL}
+      - HUMHUB_ADMIN_PASSWORD=${HUMHUB_ADMIN_PASSWORD}
+
     volumes:
       - config:/var/www/localhost/htdocs/protected/config
       - uploads:/var/www/localhost/htdocs/uploads
-#      - modules:/var/www/localhost/htdocs/protected/modules
+      - modules:/var/www/localhost/htdocs/protected/modules
       - logs:/var/www/localhost/htdocs/protected/runtime/logs
-#      - searchdb:/var/www/localhost/htdocs/protected/runtime/searchdb
+      # Search index is not persisted
       - themes:/var/www/localhost/htdocs/themes
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
     networks:
       - app-net
       - proxy
+
     labels:
       - traefik.enable=true
       - traefik.http.routers.humhub.rule=Host(`${HUMHUB_HOST}`)
@@ -162,78 +175,96 @@ services:
       - traefik.http.routers.humhub.middlewares=security-headers,compress
       - traefik.http.services.humhub.loadbalancer.server.port=80
 
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ------------------------------------------------
+  # HUMHUB CRON (Queue + Cron runner)
+  # ------------------------------------------------
   humhub-cron:
     image: mriedmann/humhub:${HUMHUB_VERSION}
     restart: unless-stopped
     depends_on:
       - humhub
-    command: ["sh", "-c", "while true; do php /var/www/localhost/htdocs/protected/yii queue/run; php /var/www/localhost/htdocs/protected/yii cron/run; sleep 60; done"]
+    command: ["sh", "-c",
+      "while true; do \
+        php /var/www/localhost/htdocs/protected/yii queue/run && \
+        php /var/www/localhost/htdocs/protected/yii cron/run; \
+      sleep 60; done"
+    ]
     environment:
       - TZ=${TZ}
-      - NGINX_CLIENT_MAX_BODY_SIZE=${NGINX_CLIENT_MAX_BODY_SIZE}
-      - NGINX_KEEPALIVE_TIMEOUT=${NGINX_KEEPALIVE_TIMEOUT}
-      # --- parameters for compatibiliyu with Humhub's own container image ---
+      - HUMHUB_PROTO=https
+      - HUMHUB_HOST=${HUMHUB_HOST}
+      - HUMHUB_BASE_URL=${HUMHUB_BASE_URL}
+
       - HUMHUB_DB_HOST=mariadb
       - HUMHUB_DB_PORT=3306
       - HUMHUB_DB_NAME=${MARIADB_DATABASE}
       - HUMHUB_DB_USER=${MARIADB_USER}
       - HUMHUB_DB_PASSWORD=${MARIADB_PASSWORD}
-      - HUMHUB_AUTO_INSTALL=1
-      - HUMHUB_DEBUG=0
-      - HUMHUB_PROTO=https
-      - HUMHUB_HOST=${HUMHUB_HOST}
-      - HUMHUB_BASE_URL=${HUMHUB_BASE_URL}
-#      - HUMHUB_REVERSEPROXY_WHITELIST=${REVERSEPROXY_WHITELIST}
-      - HUMHUB_CACHE_EXPIRE_TIME=3600
-      - HUMHUB_CACHE_CLASS=yii\redis\Cache
-      - HUMHUB_QUEUE_CLASS=humhub\modules\queue\driver\Redis
+
       - HUMHUB_REDIS_HOSTNAME=redis
       - HUMHUB_REDIS_PORT=6379
       - HUMHUB_REDIS_PASSWORD=${REDIS_PASSWORD}
+
+      - HUMHUB_AUTO_INSTALL=1
+      - HUMHUB_DEBUG=0
+
     volumes:
       - config:/var/www/localhost/htdocs/protected/config
       - uploads:/var/www/localhost/htdocs/uploads
       - modules:/var/www/localhost/htdocs/protected/modules
       - logs:/var/www/localhost/htdocs/protected/runtime/logs
-      - searchdb:/var/www/localhost/htdocs/protected/runtime/searchdb
       - themes:/var/www/localhost/htdocs/themes
     networks:
       - app-net
 
+  # ------------------------------------------------
+  # ONLYOFFICE Document Server
+  # ------------------------------------------------
   onlyoffice:
     image: onlyoffice/documentserver:${ONLYOFFICE_VERSION}
     restart: unless-stopped
     environment:
+      - TZ=${TZ}
       - JWT_ENABLED=true
       - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
       - JWT_HEADER=Authorization
-      - TZ=${TZ}
     volumes:
       - onlyoffice_data:/var/lib/onlyoffice
       - onlyoffice_log:/var/log/onlyoffice
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck || exit 1"]
-      interval: 30s
-      timeout: 5s
-      retries: 10
     networks:
       - app-net
       - proxy
     labels:
       - traefik.enable=true
-      # HTTP router – nodig voor ACME HTTP-01 challenge
+
+      # HTTP (for ACME challenge)
       - traefik.http.routers.onlyoffice-http.rule=Host(`${ONLYOFFICE_HOST}`)
       - traefik.http.routers.onlyoffice-http.entrypoints=web
       - traefik.http.routers.onlyoffice-http.middlewares=redirect-to-https
       - traefik.http.routers.onlyoffice-http.service=onlyoffice
-      # HTTPS router – normale OnlyOffice toegang
+
+      # HTTPS
       - traefik.http.routers.onlyoffice.rule=Host(`${ONLYOFFICE_HOST}`)
       - traefik.http.routers.onlyoffice.entrypoints=websecure
       - traefik.http.routers.onlyoffice.tls.certresolver=letsencrypt
       - traefik.http.routers.onlyoffice.middlewares=security-headers,compress
-      # Backend service
       - traefik.http.services.onlyoffice.loadbalancer.server.port=80
 
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+
+  # ------------------------------------------------
+  # SMTP Relay
+  # ------------------------------------------------
   smtp:
     image: boky/postfix:latest
     restart: unless-stopped
@@ -244,12 +275,14 @@ services:
       - RELAYHOST_PASSWORD=${SMTP_RELAY_PASSWORD}
       - TLS_POLICY=encrypt
       - SERVER_HOSTNAME=${SMTP_HELO_NAME}
-      - TZ=${TZ}
       - ALLOWED_SENDER_DOMAINS=martdj.nl
+      - TZ=${TZ}
     networks:
       - app-net
-    # Don't publish ports. HumHub internally uses 'smtp:25'
 
+  # ------------------------------------------------
+  # Automated Backups
+  # ------------------------------------------------
   backup:
     image: fradelg/mysql-cron-backup:latest
     restart: unless-stopped
@@ -268,42 +301,43 @@ services:
     networks:
       - app-net
 
+  # ------------------------------------------------
+  # REDIS
+  # ------------------------------------------------
   redis:
     image: redis:7.0-alpine
+    restart: unless-stopped
     command:
       - redis-server
       - --requirepass
       - ${REDIS_PASSWORD}
       - --appendonly
       - "yes"
-    expose:
-      - '6379'
     volumes:
-      - /local/humhub/data/redis:/data
-    environment:
-      - REDIS_PASSWORD=${REDIS_PASSWORD}
-      #- ALLOW_EMPTY_PASSWORD=yes
+      - redis_data:/data
+    networks:
+      - app-net
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
-    restart: unless-stopped
-    networks:
-      - app-net
 
+  # ------------------------------------------------
+  # Traefik Middlewares (static providers)
+  # ------------------------------------------------
   traefik-middlewares:
-    image: traefik:v2.11
+    image: traefik:v3.6
     labels:
       - traefik.enable=true
 
-      # redirect middleware
+      # Redirect: HTTP → HTTPS
       - traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https
 
-      # compression middleware
+      # Compression
       - traefik.http.middlewares.compress.compress=true
 
-      # security headers
+      # Security headers
       - traefik.http.middlewares.security-headers.headers.stsSeconds=31536000
       - traefik.http.middlewares.security-headers.headers.stsIncludeSubdomains=true
       - traefik.http.middlewares.security-headers.headers.stsPreload=true
