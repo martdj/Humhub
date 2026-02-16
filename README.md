@@ -1,43 +1,53 @@
-# HumHub Docker Deployment (IPv4/IPv6 Ready, Traefik v3.6)
+# HumHub Docker Deployment (Production‑Ready with Traefik 3.6)
 
-A production‑ready HumHub deployment using Docker Compose with Traefik 3.6 (host network, IPv6‑first), MariaDB, Redis, OnlyOffice Document Server, SMTP relay, scheduled backups, and a dedicated Cron worker.  
+A robust, production‑ready HumHub deployment using Docker Compose.  
+Includes Traefik 3.6, MariaDB 11.4, Redis 7, OnlyOffice Document Server, SMTP relay, automated backups, and a dedicated Cron worker.  
+A powerful interactive installer (`prepare_system.sh`) fully automates host preparation, directory creation, environment configuration, and HumHub bootstrapping.
 
 ---
 
 ## Table of Contents
 - Overview
 - Architecture Diagram
+- Components
 - Requirements
-- Directory Layout & Persistence
-- Environment Variables (`.env`)
-- Installation & Initial Startup
-- Services & Endpoints
-- Traefik & Middlewares
-- Health Checks
-- Backups & Restore
+- Directory Layout
+- Installation Tools
+  - prepare_system.sh
+  - Installation Config Generator
+  - Environment Wizard
+  - Firewall & Dependency Checks
+  - Installation Checker
+- Quick Install
+- Full Installation Walkthrough
+- Services
+- Updating & Maintenance
+- Backup & Restore
 - IPv6 Notes
-- Operations (Update/Logs/Stop)
+- Scaling & Extensions (Garage S3, HA Considerations)
 - Troubleshooting
 
 ---
 
 ## Overview
-This stack exposes HumHub securely through Traefik v3.6 with automatic certificates (ACME HTTP‑01).  
-Middlewares (redirect, compression, security headers) are declared in a separate `traefik-middlewares` service and referenced by the app routers.  
-The reverse proxy binds to `:80`/`:443` on **IPv6** (`[::]`) and supports dual‑stack (IPv4/IPv6) when available.
+
+This repository provides a fully containerized HumHub environment optimized for performance, reliability, IPv4/IPv6 compatibility, and ease of installation.  
+The included `prepare_system.sh` script automates nearly every step of host preparation, making first‑time installation straightforward for beginners and experts alike.
 
 ---
 
 ## Architecture Diagram
+
 ```mermaid
 flowchart TD
+
     subgraph Proxy
-        T[Traefik v3.6 - host network]
-        TM[Traefik Middlewares - labels provider]
+        T[Traefik v3.6<br/>host network]
+        TM[Traefik Middlewares<br/>redirect, security, compression]
     end
 
     subgraph App
-        H[HumHub]
+        H[HumHub<br/>PHP-FPM]
         C[Cron Worker]
     end
 
@@ -46,321 +56,387 @@ flowchart TD
         R[Redis 7]
     end
 
-    subgraph Aux
+    subgraph Docs
         O[OnlyOffice Document Server]
-        S[SMTP Relay - boky/postfix]
+    end
+
+    subgraph Mail
+        S[SMTP Relay]
+    end
+
+    subgraph Backup
         B[MySQL Backup Cron]
     end
 
-    T -->|HTTP/HTTPS| H
-    T -->|HTTP/HTTPS| O
     T --> TM
+    TM --> H
+    TM --> O
 
-    H -->|DB| M
-    H -->|Cache/Queue| R
-    C -->|DB| M
-    C -->|Queue| R
+    H --> M
+    H --> R
+    H --> S
 
-    B -->|mysqldump| M
-    H -->|SMTP| S
+    C --> M
+    C --> R
+
+    B --> M
 ```
+
+---
+
+## Components
+
+| Component | Purpose |
+|----------|---------|
+| **Traefik 3.6** | Reverse proxy, certificates, security headers |
+| **HumHub** | Main application container |
+| **HumHub Cron** | Queue runner + scheduled tasks |
+| **MariaDB 11.4** | Database |
+| **Redis 7** | Cache + Queue backend |
+| **OnlyOffice Document Server** | In‑browser document editing |
+| **Postfix SMTP Relay** | Outbound email |
+| **MySQL Backup Container** | Automated scheduled backups |
 
 ---
 
 ## Requirements
-- Linux host (Ubuntu/Debian/Alma/Rocky, etc.)
-- Docker Engine + Docker Compose v2
+
+- A Linux host (Ubuntu, Debian, AlmaLinux, Rocky, etc.)
+- Docker Engine & Docker Compose V2
 - Open inbound ports **80** and **443** (IPv4 and/or IPv6)
 - Public DNS for:
-  - `HUMHUB_HOST` (HumHub)
-  - `ONLYOFFICE_HOST` (OnlyOffice)
-- A `.env` file with required variables (see below)
+  - HumHub (`HUMHUB_HOST`)
+  - OnlyOffice (`ONLYOFFICE_HOST`)
+- A user account with sudo rights
 
 ---
 
-## Directory Layout & Persistence
-Host bind mounts (all under `/local/humhub/data`):
+## Directory Layout
+
+All persistent data lives under `/local/humhub/data`:
 
 ```
 /local/humhub/data/
-  db-data/                 # MariaDB data
+  db-data/
   humhub/
-    config/                # HumHub protected config
-    uploads/               # User uploads
-    modules/               # Additional HumHub modules
-    logs/                  # Runtime logs
-    themes/                # Custom themes
+    config/
+    uploads/
+    modules/
+    logs/
+    themes/
   onlyoffice/
-    data/                  # OnlyOffice data
-    log/                   # OnlyOffice logs
-  backups/                 # Database backups (from backup container)
+    data/
+    log/
+  redis/
+  backups/
   traefik/
-    letsencrypt/           # ACME storage (acme.json)
-  redis/                   # Redis AOF data
-```
-
-Create these (if not using an external script):
-```bash
-sudo mkdir -p \
-  /local/humhub/data/db-data \
-  /local/humhub/data/humhub/{config,uploads,modules,logs,themes} \
-  /local/humhub/data/onlyoffice/{data,log} \
-  /local/humhub/data/backups \
-  /local/humhub/data/traefik/letsencrypt \
-  /local/humhub/data/redis
-
-# (Optional) Restrict ACME storage as recommended
-sudo touch /local/humhub/data/traefik/letsencrypt/acme.json
-sudo chmod 600 /local/humhub/data/traefik/letsencrypt/acme.json
+    letsencrypt/
 ```
 
 ---
 
-## Environment Variables (`.env`)
-Populate a `.env` alongside your `docker-compose.yml`:
+## Installation Tools
 
-```bash
-# General
-TZ=Europe/Amsterdam
-LE_EMAIL=admin@example.com
+### `prepare_system.sh` (interactive installer)
 
-# HumHub app
-HUMHUB_VERSION=1.16.0
-HUMHUB_HOST=humhub.example.com
-HUMHUB_BASE_URL=https://humhub.example.com
-HUMHUB_ADMIN_USERNAME=admin
-HUMHUB_ADMIN_EMAIL=admin@example.com
-HUMHUB_ADMIN_PASSWORD=ChangeMe_Secret123
-NGINX_CLIENT_MAX_BODY_SIZE=128m
-NGINX_KEEPALIVE_TIMEOUT=65
+This script automates:
 
-# MariaDB
-MARIADB_ROOT_PASSWORD=ChangeMe_RootSecret123
-MARIADB_DATABASE=humhub
-MARIADB_USER=humhub
-MARIADB_PASSWORD=ChangeMe_DbSecret123
+- Directory creation for all bind‑mounts  
+- Permission configuration  
+- Installation of system packages (curl, jq, tar, firewall tooling, Docker if needed)  
+- Docker & Docker Compose verification  
+- Automatic `.env` creation using an interactive wizard  
+- Pre‑filling defaults by reading an existing `.env`  
+- Validation of ports (IPv4 + IPv6 reachability)  
+- Firewall checks for 80/443  
+- Installation of cron job for backups  
+- User setup:  
+  - Adds the `humhub` user if needed  
+  - Grants membership in the `docker` group  
+- Creation of `installation_config.php` for auto‑install  
+- Optional toggle for Let's Encrypt staging environment  
+- Installation checker (validates all required tools before running the stack)
 
-# Redis
-REDIS_PASSWORD=ChangeMe_RedisSecret123
+This script is **always interactive**—no non‑interactive mode is provided.
 
-# OnlyOffice
-ONLYOFFICE_VERSION=8.1.1
-ONLYOFFICE_JWT_SECRET=ChangeMe_OnlyOfficeJWT
-ONLYOFFICE_HOST=onlyoffice.example.com
+### Installation Config Generator
 
-# SMTP relay (boky/postfix)
-SMTP_RELAY_HOST=smtp.relay.example.com
-SMTP_RELAY_PORT=587
-SMTP_RELAY_USER=apikey
-SMTP_RELAY_PASSWORD=ChangeMe_SmtpSecret123
-SMTP_HELO_NAME=mail.example.com
+Generates:
 
-# Backups
-BACKUP_SCHEDULE=0 3 * * *   # daily 03:00
+```
+/local/humhub/data/humhub/config/installation_config.php
 ```
 
-> Note: In the provided compose, `ALLOWED_SENDER_DOMAINS` is set to `martdj.nl` directly on the `smtp` service. Adjust in the compose if needed.
+Used by the HumHub container to auto‑install the platform with the admin account from `.env`.
+
+### Environment File Wizard
+
+Prompts for:
+
+- Domain names  
+- Admin credentials  
+- Mail settings  
+- Database settings  
+- Redis password  
+- OnlyOffice host + JWT secret  
+- Backup schedule  
+- Timezone  
+
+Automatically loads defaults from `.env` when present.
+
+### Firewall & Dependency Checker
+
+Ensures:
+
+- Host can bind to ports 80/443  
+- DNS resolves correctly  
+- IPv6 is available when applicable  
+- Required binaries exist:
+  - docker
+  - docker compose
+  - curl
+  - openssl
+  - jq
+  - tar
+
+### Installation Checker
+
+Confirms:
+
+- Directory structure exists  
+- Permissions are correct  
+- Required environment variables are set  
+- docker-compose.yml is syntactically valid  
 
 ---
 
-## Installation & Initial Startup
+## Quick Install
 
-1) **Clone (or place) the compose files**  
-Make sure `.env` and `docker-compose.yml` sit in the same directory.
-
-2) **Start the services required for first‑time setup**  
-Initial startup must include **Traefik** and **Traefik‑middlewares** (so routes and middlewares resolve), plus HumHub’s dependencies:
+You can bootstrap the server instantly using:
 
 ```bash
-# From the compose directory:
+curl -fsSL https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/prepare_system.sh | sudo bash
+```
+
+This:
+
+1. Downloads the latest installer  
+2. Runs it as root  
+3. Launches the interactive setup wizard  
+4. Creates `.env`, config directories, and installation config  
+5. Prepares the machine for container startup  
+
+---
+
+## Full Installation Walkthrough
+
+### 1. Run the installer
+```bash
+sudo ./prepare_system.sh
+```
+
+### 2. Start all services needed for installation
+To allow middleware references and TLS issuance:
+
+```bash
 docker compose up -d mariadb redis humhub traefik traefik-middlewares
 ```
 
-3) **Obtain certificates automatically**  
-Traefik will issue certificates via HTTP‑01 once DNS resolves to your host and ports 80/443 are reachable.
+### 3. Access HumHub
+Navigate to:
 
-4) **Access HumHub**  
-Open `https://$HUMHUB_HOST`.  
-The container is configured for auto‑install using the admin credentials from `.env`.
-
-5) **Start the Cron worker after successful install**  
-```bash
-docker compose up -d humhub-cron
+```
+https://<HUMHUB_HOST>
 ```
 
-6) **Start auxiliary services (optional but recommended)**  
+Login using:
+
+- admin username (from `.env`)
+- admin password (from `.env`)
+
+### 4. Start background services
+
 ```bash
-# Document editing
-docker compose up -d onlyoffice
-
-# Outbound mail relay
-docker compose up -d smtp
-
-# Scheduled DB backups
-docker compose up -d backup
+docker compose up -d humhub-cron onlyoffice smtp backup
 ```
 
 ---
 
-## Services & Endpoints
+## Services
 
-| Service             | Role                               | Exposure                          |
-|---------------------|------------------------------------|-----------------------------------|
-| `traefik`           | Reverse proxy, ACME                | Host network `:80`, `:443`        |
-| `traefik-middlewares` | Declares middlewares via labels | Internal (labels read by Traefik) |
-| `humhub`            | Main web application               | via Traefik (`HUMHUB_HOST`)       |
-| `humhub-cron`       | Queue + cron runner                | internal                          |
-| `mariadb`           | Database                           | internal                          |
-| `redis`             | Cache / queue backend              | internal                          |
-| `onlyoffice`        | Document server                    | via Traefik (`ONLYOFFICE_HOST`)   |
-| `smtp`              | SMTP relay (boky/postfix)          | internal                          |
-| `backup`            | mysqldump via cron                 | internal                          |
-
-**Networks**
-- `proxy`: for fronted services (`humhub`, `onlyoffice`, `traefik-middlewares`)
-- `app-net`: internal app/data traffic
+| Service | Port / Access | Purpose |
+|---------|----------------|---------|
+| **traefik** | Host‑mode 80/443 | HTTPS termination, routing |
+| **traefik-middlewares** | Internal | Provides redirect/security/compression middlewares |
+| **humhub** | via Traefik | Main application |
+| **humhub-cron** | internal | Cron + queue worker |
+| **mariadb** | internal | Database |
+| **redis** | internal | Cache + queue backend |
+| **onlyoffice** | via Traefik | Document editing |
+| **smtp** | internal | Email relay |
+| **backup** | internal | mysqldump backups |
 
 ---
 
-## Traefik & Middlewares
+## Updating & Maintenance
 
-**Traefik (v3.6)**
-- `network_mode: host`  
-- EntryPoints:
-  - `web` → `[::]:80`
-  - `websecure` → `[::]:443`
-- ACME (HTTP‑01):  
-  - `--certificatesresolvers.letsencrypt.acme.email=${LE_EMAIL}`  
-  - `--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json`  
-  - `--certificatesresolvers.letsencrypt.acme.httpChallenge.entryPoint=web`
+### Update all containers
 
-**Middlewares (declared on `traefik-middlewares` via labels)**
-- `redirect-to-https`: redirects HTTP → HTTPS
-- `compress`: enables on‑the‑fly compression
-- `security-headers`: HSTS, no‑sniff, XSS filter, frame deny, etc.
-
-**Routers**
-- `humhub`:
-  - `rule=Host(${HUMHUB_HOST})`, entrypoint `websecure`, TLS via `letsencrypt`
-  - middlewares: `security-headers,compress`
-- `onlyoffice`:
-  - HTTP router on `web` with `redirect-to-https`
-  - HTTPS router on `websecure` with `security-headers,compress`
-
-> If you see “middleware does not exist”, ensure `traefik-middlewares` is **running** before starting services that reference those middlewares.
-
----
-
-## Health Checks
-
-- **humhub**: `curl -f http://localhost/ping`  
-- **onlyoffice**: `curl -fsS http://localhost/healthcheck`  
-- **redis**: `redis-cli -a $REDIS_PASSWORD ping`
-
-Check logs if a healthcheck fails:
 ```bash
-docker compose logs humhub
-docker compose logs onlyoffice
-docker compose logs redis
+docker compose pull
+docker compose up -d
+```
+
+### Validate configuration
+
+```bash
+docker compose config
+```
+
+### View logs
+
+```bash
+docker compose logs -f humhub
+docker compose logs -f traefik
+docker compose logs -f onlyoffice
 ```
 
 ---
 
-## Backups & Restore
+## Backup & Restore
 
-**Backups**
-- The `backup` service runs `mysqldump` on the schedule set by `BACKUP_SCHEDULE`.
-- Dumps are stored in `/local/humhub/data/backups` on the host.
+### Backups
+Produced automatically by the `backup` container:
 
-**Restore (example)**
+```
+/local/humhub/data/backups/*.sql.gz
+```
+
+### Restore example
+
 ```bash
-# Stop HumHub to avoid writes during restore
 docker compose stop humhub humhub-cron
 
-# Restore the latest dump (replace filename as needed)
-gunzip -c /local/humhub/data/backups/your_dump.sql.gz | \
+gunzip -c backupfile.sql.gz | \
   docker compose exec -T mariadb \
   sh -c 'mysql -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"'
 
-# Start services back
 docker compose up -d humhub humhub-cron
 ```
 
 ---
 
 ## IPv6 Notes
-- Traefik binds to IPv6 (`[::]`) for both `web` and `websecure`. Dual‑stack hosts will also serve IPv4.
-- Ensure your DNS has an **AAAA** record for each hostname.
-- Open firewall for IPv6 ports **80/443**.
-- If you run **IPv6‑only**, confirm your provider and upstream paths support it.
+
+This deployment:
+
+- Binds Traefik to IPv6 (`[::]:80`/`[::]:443`)
+- Works fully dual‑stack  
+- Supports IPv6‑only setups if DNS + provider allow it  
+
+Ensure:
+
+- AAAA record exists  
+- Firewall allows inbound IPv6  
+- ISP/router supports next‑hop IPv6  
+- No NAT66 or misconfigured reverse proxy sits in front
 
 ---
 
-## Operations
+## Scaling & Extensions
 
-**Update containers**
-```bash
-docker compose pull
-docker compose up -d
-```
+This stack runs as a **single‑node deployment**, ideal for small to medium communities.
 
-**View logs**
-```bash
-docker compose logs -f traefik
-docker compose logs -f humhub
-docker compose logs -f onlyoffice
-```
+### Horizontal scaling (future option)
 
-**Stop / Start**
-```bash
-docker compose stop
-docker compose up -d
-```
+You may scale:
 
-**Validate compose**
-```bash
-docker compose config
-```
+- HumHub containers  
+- Cron workers  
+- OnlyOffice
+
+Requires:
+
+- Moving to Docker Swarm or Kubernetes  
+- Shared storage for:
+  - uploads  
+  - modules  
+  - themes  
+  - config  
+
+### Using Garage S3 (optional)
+
+To offload uploads & backups, you can extend the stack with:
+
+- A Garage S3 cluster for:
+  - Upload storage
+  - Backups
+  - External off‑site replication
+
+This requires:
+
+- Adding a `garage` service
+- Configuring HumHub’s S3 storage backend
+- Switching volumes → S3 buckets
+
+A Garage‑based setup is recommended when:
+
+- Running multiple HumHub frontends  
+- Storing large media libraries  
+- Requiring geo‑replicated object storage  
 
 ---
 
 ## Troubleshooting
 
-**Middlewares not found**
-- Start `traefik` and `traefik-middlewares` **first**:
-  ```bash
-  docker compose up -d traefik traefik-middlewares
-  ```
-- Then (re)start apps referencing them.
+### Middlewares not found
+Start Traefik + middlewares first:
 
-**502/504 from Traefik**
-- Check app health/logs:
-  ```bash
-  docker compose ps
-  docker compose logs humhub
-  ```
-- Verify DNS resolves to the correct IP and ports are reachable.
+```bash
+docker compose up -d traefik traefik-middlewares
+```
 
-**Cannot obtain TLS certificates**
-- Verify A/AAAA DNS records, 80/443 open, and no extra proxy interfering.
-- Check Traefik logs:
-  ```bash
-  docker compose logs traefik
-  ```
+### TLS certificates not generating
+Check:
 
-**OnlyOffice not reachable**
-- Ensure `onlyoffice` is started and DNS for `ONLYOFFICE_HOST` points to your server.
-- Check health:
-  ```bash
-  docker compose logs onlyoffice
-  ```
+```bash
+docker compose logs traefik
+```
 
-**HumHub queue/cron tasks not running**
-- Start the cron worker:
-  ```bash
-  docker compose up -d humhub-cron
-  ```
+Ensure:
+
+- Port 80/443 exposed  
+- DNS A/AAAA correct  
+- No extra proxy interfering  
+
+### OnlyOffice connection errors
+Verify:
+
+```bash
+docker compose logs onlyoffice
+```
+
+Check that:
+
+- JWT secret matches HumHub  
+- ONLYOFFICE_HOST is correct  
+- The server is reachable via Traefik  
+
+### Cron jobs not running
+The cron worker must be started:
+
+```bash
+docker compose up -d humhub-cron
+```
+
+### Database errors
+Inspect logs:
+
+```bash
+docker compose logs mariadb
+```
 
 ---
 
-Ready for production. Keep your `.env` secrets secure and consider restricting access to the ACME storage (`acme.json`) as shown above.
+Ready for production!  
+This setup balances robustness, maintainability, and simplicity—while leaving room for future scaling such as object storage via Garage or multi‑node expansion.
