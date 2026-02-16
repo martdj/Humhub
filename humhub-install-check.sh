@@ -9,9 +9,8 @@ INSTALL_CFG="$CONFIG_DIR/installation_config.php"
 
 RED="\033[0;31m"; GREEN="\033[0;32m"; YELLOW="\033[1;33m"; OFF="\033[0m"
 
-ok(){    echo -e "${GREEN}[OK]${OFF} $*"; }
-warn(){  echo -e "${YELLOW}[WARN]${OFF} $*"; }
-fail(){  echo -e "${RED}[FAIL]${OFF} $*"; exit 1; }
+ok(){ echo -e "${GREEN}[OK]${OFF} $*"; }
+fail(){ echo -e "${RED}[FAIL]${OFF} $*"; exit 1; }
 
 echo "=============================================================="
 echo " HumHub Installation Checker"
@@ -19,115 +18,77 @@ echo "=============================================================="
 echo
 
 # ---------------------------------------------------------------
-# 1) Check installation_config.php
+# 1) installation_config.php must exist and have correct mode
 # ---------------------------------------------------------------
-echo "▶ Checking: installation_config.php exists..."
+echo "▶ Checking installation_config.php..."
 
 if [[ ! -f "$INSTALL_CFG" ]]; then
-  fail "installation_config.php is missing! Run prepare_system.sh first."
-else
-  ok "Found: $INSTALL_CFG"
+  fail "installation_config.php is missing. Run prepare_system.sh first."
 fi
+ok "Found: $INSTALL_CFG"
 
-if [[ "$(stat -c %a "$INSTALL_CFG")" != "640" && "$(stat -c %a "$INSTALL_CFG")" != "644" ]]; then
-  warn "Permissions of installation_config.php should be 640 or 644."
-else
-  ok "Permissions look good."
+perm=$(stat -c %a "$INSTALL_CFG")
+if [[ "$perm" != "640" && "$perm" != "644" ]]; then
+  fail "installation_config.php must be mode 640 or 644 (current: $perm)."
 fi
+ok "Permissions are correct."
 
 # ---------------------------------------------------------------
-# 2) Check DB directory is empty
+# 2) DB directory must exist and be empty
 # ---------------------------------------------------------------
 echo
-echo "▶ Checking: Database directory is empty..."
+echo "▶ Checking database directory..."
 
 if [[ ! -d "$DB_DIR" ]]; then
-  fail "$DB_DIR does not exist! prepare_system.sh did not create it."
+  fail "$DB_DIR does not exist. prepare_system.sh did not complete successfully."
 fi
 
 if [[ -n "$(ls -A "$DB_DIR")" ]]; then
-  fail "Database directory is NOT empty. Installation will fail or create admin with wrong values."
-else
-  ok "Database directory is empty — good."
+  fail "Database directory is NOT empty. A clean installation is not possible."
 fi
+ok "Database directory is empty."
 
 # ---------------------------------------------------------------
-# 3) Check config directory is OK
+# 3) Config directory must contain ONLY installation_config.php
 # ---------------------------------------------------------------
 echo
-echo "▶ Checking: HumHub config directory..."
+echo "▶ Checking HumHub config directory..."
 
 if [[ ! -d "$CONFIG_DIR" ]]; then
   fail "Config directory $CONFIG_DIR does not exist."
 fi
 
-# Should ONLY contain installation_config.php on a fresh install
-EXTRA_FILES=$(ls "$CONFIG_DIR" | grep -v installation_config.php || true)
-
-if [[ -n "$EXTRA_FILES" ]]; then
-  warn "Config directory contains extra files:"
-  echo "$EXTRA_FILES"
-  fail "This indicates a previous or partial installation. Clean before retrying."
-else
-  ok "Config directory is clean."
+extra=$(ls "$CONFIG_DIR" | grep -v installation_config.php || true)
+if [[ -n "$extra" ]]; then
+  fail "Config directory contains extra files. Remove them before installation."
 fi
+ok "Config directory is clean."
 
 # ---------------------------------------------------------------
-# 4) Check humhub-cron is NOT running
+# 4) humhub user must be able to run docker
 # ---------------------------------------------------------------
 echo
-echo "▶ Checking: humhub-cron is NOT running..."
-
-if docker ps --format '{{.Names}}' | grep -q humhub-cron; then
-  fail "humhub-cron is running — stop it before installation."
-else
-  ok "humhub-cron is not running — good."
-fi
-
-# ---------------------------------------------------------------
-# 5) Check searchdb is NOT host-mounted
-# ---------------------------------------------------------------
-echo
-echo "▶ Checking: searchdb MUST NOT be persistent..."
-
-if grep -q "searchdb" "$HUMHUB_DIR/docker-compose.yml"; then
-  if grep -q "/protected/runtime/searchdb" "$HUMHUB_DIR/docker-compose.yml"; then
-    fail "searchdb is host-mounted! Remove searchdb volume mapping to avoid installation failure."
-  fi
-fi
-
-ok "searchdb is not persistent — correct."
-
-# ---------------------------------------------------------------
-# 6) Check that humhub user can run docker
-# ---------------------------------------------------------------
-echo
-echo "▶ Checking: humhub user docker access..."
+echo "▶ Checking docker permissions for humhub user..."
 
 if sudo -u humhub docker ps >/dev/null 2>&1; then
-  ok "humhub user can run docker commands."
+  ok "humhub user can run docker."
 else
-  warn "humhub user CANNOT run docker yet."
-  warn "→ This is normal right after prepare_system.sh."
-  warn "→ Fix: log out and back in, or reboot."
+  fail "humhub user cannot run docker. Log out/in or reboot after prepare_system.sh."
 fi
 
 # ---------------------------------------------------------------
-# 7) Check that installer is likely to work
+# 5) Everything ready
 # ---------------------------------------------------------------
 echo
-echo "▶ Final confirmation"
-
-ok "All conditions for a clean HumHub installation look good."
-
-echo
 echo "=============================================================="
-echo "READY TO INSTALL"
-echo "Run the following to start installation:"
+echo " All checks passed. HumHub is ready for installation."
 echo
-echo "  sudo -u humhub docker compose up -d mariadb redis humhub"
+echo "Start the minimal installation stack:"
+echo "  sudo -u humhub docker compose up -d traefik mariadb redis humhub"
 echo
-echo "After installation and first admin login:"
+echo "Watch logs:"
+echo "  sudo -u humhub docker compose logs -f humhub"
 echo
-echo "  sudo -u humhub docker compose up -d"
+echo "Then open HumHub in your browser:"
+echo "  https://<your-humhub-host>"
 echo "=============================================================="
