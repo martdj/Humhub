@@ -1,64 +1,31 @@
-# Humhub
-Scripts and docker compose files for installing Humhub
+# HumHub Docker Deployment
 
-# HumHub Host Preparation Script
+A production‑ready Docker environment for running **HumHub** with:
 
-This repository provides a system preparation script for running **HumHub with Docker Compose** on a RHEL-based system (CentOS / Rocky / Alma).
+- Traefik 3 reverse proxy + automatic HTTPS  
+- MariaDB & Redis  
+- OnlyOffice DocumentServer  
+- SMTP relay  
+- Automated backups  
+- Dedicated Cron/Queue container  
+- IPv6 support  
 
-The script installs Docker, prepares the required directory structure, configures the firewall and SELinux, and downloads the required configuration files.
+Includes a **fully automated host preparation script**, installation checker, and a clean installation workflow designed for stability and repeatability.
 
----
+### Features
+- One‑command host setup (`prepare_system.sh`)
+- Safe `.env` generation with strong defaults
+- Automatic creation of `installation_config.php`
+- Traefik HTTPS with staging/production switching
+- Minimal‑stack installation → full‑stack deployment
+- Clear directory structure under `/local/humhub/data`
+- OnlyOffice JWT integration
 
-## Quick start
+### Installation
+1. Run the preparation script as root  
+2. Run the installation‑checker  
+3. Start the minimal services  
+4. Log in as admin  
+5. Start the full stack  
 
-Run the following command on a fresh system:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/prepare_system.env | sudo bash
-```
-Or using wget:
-```bash
-wget -qO- https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/prepare_system.env | sudo bash
-```
-What the script does:
-- Installs Docker and Docker Compose (if not already installed)
-- Enables and starts the Docker service
-- Configures SELinux for container usage (if enabled)
-- Creates a dedicated humhub system user
-- Creates all required data directories under /local/humhub
-
-Downloads:
-- .env
-- docker-compose.yml
-- Sets correct ownership and permissions
-- Opens HTTP and HTTPS in the firewall
-- Pulls all Docker images (does not start the stack)
-- Warns if existing database data is detected
-
-After running the script
-1. Edit the .env file
-
-Adjust the environment configuration to your needs (domains, passwords, mail settings, etc.):
-```bash
-cd /local/humhub
-nano .env
-```
-Use any text editor you prefer (nano, vi, vim, micro, etc.).
-
-2. Start the stack
-
-Once the .env file is configured, start the HumHub stack:
-```bash
-sudo -u humhub docker compose up -d
-```
-Notes
-
-The script is idempotent and can safely be run multiple times.
-Existing data is never overwritten automatically.
-Docker images are pulled in advance to speed up deployment.
-SELinux and firewalld are supported out of the box.
-
-Requirements
-- RHEL-based Linux distribution (CentOS, Rocky Linux, AlmaLinux)
-- Internet access
-- Root or sudo privileges
+See the full documentation in **README.md**.
