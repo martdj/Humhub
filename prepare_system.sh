@@ -3,47 +3,44 @@ set -euo pipefail
 
 # ==================================================
 # HumHub Host Preparation Script
-# Version: 1.3.0
+# Version: 1.3.1
 #
 # This script prepares a host to run a complete
 # HumHub + OnlyOffice + Traefik Docker stack.
 # It performs:
-#   - Installation of required system packages
-#   - Docker installation
+#   - OS detection (RHEL-like vs Debian-like)
+#   - Installation of system packages & Docker
+#   - Firewall configuration (firewalld or ufw when applicable)
 #   - Creation of directory structure under /local/humhub/data
-#   - Full .env generation with safe defaults
-#   - Creation of installation_config.php
+#   - Generation of .env and installation_config.php
 #   - Automatic ACME staging toggle in docker-compose.yml
 #   - Download of installation checker script
 #   - Adding the "humhub" user to the "docker" group
-#   - Firewall configuration with idempotent rule checks
 #
 # Run this script as root.
 # ==================================================
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 
+# Paths & files
 HUMHUB_USER="humhub"
 HUMHUB_DIR="/local/humhub"
 DATA_DIR="$HUMHUB_DIR/data"
 ENV_FILE="$HUMHUB_DIR/.env"
 COMPOSE_FILE="$HUMHUB_DIR/docker-compose.yml"
-
 CONFIG_DIR="$DATA_DIR/humhub/config"
 INSTALL_CFG="$CONFIG_DIR/installation_config.php"
-
 ACME_DIR="$DATA_DIR/traefik/letsencrypt"
 ACME_FILE="$ACME_DIR/acme.json"
 
-INSTALL_CHECK_URL="https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/humhub-install-check.sh"
+# Remote resources (raw URLs without refs/heads)
+REPO_BASE="https://raw.githubusercontent.com/martdj/Humhub/main"
+INSTALL_CHECK_URL="$REPO_BASE/humhub-install-check.sh"
 INSTALL_CHECK_LOCAL="$HUMHUB_DIR/humhub-install-check.sh"
+COMPOSE_URL="$REPO_BASE/docker-compose.yml"
 
-COMPOSE_URL="https://raw.githubusercontent.com/martdj/Humhub/refs/heads/main/docker-compose.yml"
-
-# --------------------------------------------------
 # Colors
-# --------------------------------------------------
-GREEN="\033[0;32m"; YELLOW="\033[1;33m"; RED="\033[0;31m"; DIM="\033[2m"; OFF="\033[0m"
+GREEN="\033[0;32m"; YELLOW="\033[1;33m"; RED="\033[0;31m"; OFF="\033[0m"
 log(){ echo -e "${GREEN}[*]${OFF} $*"; }
 warn(){ echo -e "${YELLOW}[!]${OFF} $*"; }
 err(){ echo -e "${RED}[x]${OFF} $*" >&2; }
@@ -51,7 +48,7 @@ err(){ echo -e "${RED}[x]${OFF} $*" >&2; }
 timestamp(){ date +"%Y%m%d-%H%M%S"; }
 
 # --------------------------------------------------
-# Random secret generators
+# Secret generators
 # --------------------------------------------------
 rand_pass(){ openssl rand -base64 24 | tr -d '\n' | tr '/+=' '_-x'; }
 rand_b64(){ openssl rand -base64 32 | tr -d '\n'; }
@@ -77,7 +74,7 @@ yesno(){
 }
 
 # --------------------------------------------------
-# Parse existing .env (safe; no sourcing)
+# Safe .env parser (no sourcing)
 # --------------------------------------------------
 load_env_defaults(){
   if [[ -f "$ENV_FILE" ]]; then
@@ -91,31 +88,110 @@ load_env_defaults(){
 }
 
 # --------------------------------------------------
-# System preparation
+# OS detection
 # --------------------------------------------------
-install_base(){
-  log "Installing base system packages..."
-  dnf install -y curl yum-utils firewalld openssl >/dev/null
+OS_FAMILY=""   # "rhel" or "debian"
+OS_ID=""       # e.g., "rhel", "centos", "rocky", "almalinux", "debian", "ubuntu"
+detect_os(){
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    OS_ID="${ID:-}"
+    local like="${ID_LIKE:-}"
+    if [[ "$OS_ID" =~ (rhel|centos|rocky|almalinux|fedora) ]] || [[ "$like" =~ (rhel|fedora) ]]; then
+      OS_FAMILY="rhel"
+    elif [[ "$OS_ID" =~ (debian|ubuntu|raspbian) ]] || [[ "$like" =~ (debian|ubuntu) ]]; then
+      OS_FAMILY="debian"
+    fi
+  fi
+  if [[ -z "$OS_FAMILY" ]]; then
+    err "Unsupported or undetected Linux distribution. /etc/os-release not recognized."
+    exit 1
+  fi
+  log "Detected OS family: $OS_FAMILY (id: ${OS_ID:-unknown})"
 }
 
-install_docker(){
+# --------------------------------------------------
+# Package installation (base dependencies)
+# --------------------------------------------------
+install_base_rhel(){
+  log "Installing base packages via dnf..."
+  dnf -y install curl yum-utils firewalld openssl >/dev/null
+}
+
+install_base_debian(){
+  log "Installing base packages via apt-get..."
+  apt-get update -y >/dev/null
+  DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    ca-certificates curl gnupg lsb-release openssl >/dev/null
+  # ufw is optional; install if present or desired later
+  if ! command -v ufw >/dev/null 2>&1; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y ufw >/dev/null || true
+  fi
+}
+
+# --------------------------------------------------
+# Docker installation
+# --------------------------------------------------
+install_docker_rhel(){
   if ! command -v docker >/dev/null 2>&1; then
-    log "Installing Docker CE..."
+    log "Installing Docker CE on RHEL-like..."
     yum-config-manager --add-repo https://download.docker.com/linux/centos/docker-ce.repo >/dev/null
-    dnf install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null
+    dnf -y install docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null
     systemctl enable --now docker
   else
     log "Docker already installed."
   fi
 }
 
-selinux_tune(){
-  if command -v getenforce >/dev/null && [[ "$(getenforce)" != "Disabled" ]]; then
+install_docker_debian(){
+  if ! command -v docker >/dev/null 2>&1; then
+    log "Installing Docker CE on Debian-like..."
+    install -m 0755 -d /etc/apt/keyrings
+    curl -fsSL https://download.docker.com/linux/${OS_ID}/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+    chmod a+r /etc/apt/keyrings/docker.gpg
+
+    local codename=""
+    if [[ -r /etc/os-release ]]; then
+      # shellcheck disable=SC1091
+      . /etc/os-release
+      codename="${VERSION_CODENAME:-}"
+    fi
+    if [[ -z "$codename" ]] && command -v lsb_release >/dev/null 2>&1; then
+      codename="$(lsb_release -cs)"
+    fi
+    if [[ -z "$codename" ]]; then
+      err "Could not determine Debian/Ubuntu codename."
+      exit 1
+    fi
+
+    echo \
+"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+https://download.docker.com/linux/${OS_ID} ${codename} stable" \
+      | tee /etc/apt/sources.list.d/docker.list >/dev/null
+
+    apt-get update -y >/dev/null
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+      docker-ce docker-ce-cli containerd.io docker-compose-plugin >/dev/null
+    systemctl enable --now docker
+  else
+    log "Docker already installed."
+  fi
+}
+
+# --------------------------------------------------
+# SELinux tuning (RHEL-like only)
+# --------------------------------------------------
+selinux_tune_rhel(){
+  if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" != "Disabled" ]]; then
     log "Applying SELinux adjustments for container operation..."
     setsebool -P container_manage_cgroup on || true
   fi
 }
 
+# --------------------------------------------------
+# User and docker group
+# --------------------------------------------------
 ensure_user(){
   if ! id "$HUMHUB_USER" >/dev/null 2>&1; then
     log "Creating system user: $HUMHUB_USER"
@@ -147,7 +223,6 @@ check_docker_access(){
 # --------------------------------------------------
 ensure_dirs(){
   log "Creating required directory structure..."
-
   mkdir -p \
     "$DATA_DIR/db-data" \
     "$DATA_DIR/humhub/config" \
@@ -163,27 +238,43 @@ ensure_dirs(){
 
   [[ -f "$ACME_FILE" ]] || touch "$ACME_FILE"
 
-  # Single unified chmod/chown for all data
   chown -R "$HUMHUB_USER:$HUMHUB_USER" "$DATA_DIR"
   find "$DATA_DIR" -type d -exec chmod 755 {} \;
   chmod 600 "$ACME_FILE"
 }
 
 # --------------------------------------------------
-# Firewall configuration (idempotent)
+# Firewall configuration (firewalld for RHEL-like, ufw for Debian-like)
 # --------------------------------------------------
-open_firewall(){
-  log "Configuring firewall rules..."
+open_firewall_rhel(){
+  log "Configuring firewalld (HTTP/HTTPS)..."
   systemctl enable --now firewalld
-
   if ! firewall-cmd --list-services | grep -qw http; then
     firewall-cmd --add-service=http --permanent
   fi
   if ! firewall-cmd --list-services | grep -qw https; then
     firewall-cmd --add-service=https --permanent
   fi
-
   firewall-cmd --reload
+}
+
+open_firewall_debian(){
+  if command -v ufw >/dev/null 2>&1; then
+    # Only set rules if ufw is available; do not auto-enable to avoid surprises
+    log "Configuring ufw rules (HTTP/HTTPS) if ufw is active..."
+    local active="inactive"
+    active="$(ufw status | awk 'NR==1{print $2}')" || true
+    if [[ "$active" == "active" ]]; then
+      # Add rules idempotently
+      ufw status | grep -qw "80/tcp" || ufw allow 80/tcp >/dev/null
+      ufw status | grep -qw "443/tcp" || ufw allow 443/tcp >/dev/null
+      log "ufw rules for 80/tcp and 443/tcp verified."
+    else
+      warn "ufw is installed but not active. Skipping ufw rule changes."
+    fi
+  else
+    warn "ufw is not installed; skipping firewall configuration on Debian-like system."
+  fi
 }
 
 # --------------------------------------------------
@@ -292,7 +383,6 @@ wizard(){
 # --------------------------------------------------
 write_env(){
   [[ -f "$ENV_FILE" ]] && cp "$ENV_FILE" "$ENV_FILE.bak.$(timestamp)"
-
   cat >"$ENV_FILE" <<EOF
 # Generated $(date -Iseconds)
 TZ=${TZ}
@@ -330,7 +420,6 @@ HUMHUB_ADMIN_USERNAME=${ADMIN_USERNAME}
 HUMHUB_ADMIN_EMAIL=${ADMIN_EMAIL}
 HUMHUB_ADMIN_PASSWORD=${ADMIN_PASS}
 EOF
-
   chmod 640 "$ENV_FILE"
   chown "$HUMHUB_USER:$HUMHUB_USER" "$ENV_FILE"
   log ".env created"
@@ -385,11 +474,11 @@ update_compose(){
   if [[ "$LE_USE_STAGING" == "true" ]]; then
     sed -i \
       's|#\s*- --certificatesresolvers\.letsencrypt\.acme\.caserver=.*$|- --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory|' \
-      "$COMPOSE_FILE"
+      "$COMPOSE_FILE" || true
   else
     sed -i \
       's|- --certificatesresolvers\.letsencrypt\.acme\.caserver=.*$|# - --certificatesresolvers.letsencrypt.acme.caserver=https://acme-staging-v02.api.letsencrypt.org/directory|' \
-      "$COMPOSE_FILE"
+      "$COMPOSE_FILE" || true
   fi
 }
 
@@ -432,16 +521,31 @@ finish_message(){
 # --------------------------------------------------
 main(){
   echo "=================================================="
-  echo " HumHub Host Preparation Script v$VERSION"
+  echo " HumHub Host Preparation Script"
+  echo " Version: $VERSION"
   echo "=================================================="
 
-  install_base
-  install_docker
-  selinux_tune
+  detect_os
+
+  if [[ "$OS_FAMILY" == "rhel" ]]; then
+    install_base_rhel
+    install_docker_rhel
+    selinux_tune_rhel
+  elif [[ "$OS_FAMILY" == "debian" ]]; then
+    install_base_debian
+    install_docker_debian
+  fi
+
   ensure_user
   ensure_user_in_docker_group
   ensure_dirs
-  open_firewall
+
+  if [[ "$OS_FAMILY" == "rhel" ]]; then
+    open_firewall_rhel
+  else
+    open_firewall_debian
+  fi
+
   fetch_compose_if_missing
   check_docker_access
 
@@ -450,7 +554,6 @@ main(){
   write_install_cfg
   update_compose
   install_checker
-
   finish_message
 }
 
