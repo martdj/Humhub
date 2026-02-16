@@ -1,7 +1,6 @@
 # HumHub Docker Deployment (IPv4/IPv6 Ready, Traefik v3.6)
 
 A production‑ready HumHub deployment using Docker Compose with Traefik 3.6 (host network, IPv6‑first), MariaDB, Redis, OnlyOffice Document Server, SMTP relay, scheduled backups, and a dedicated Cron worker.  
-This README is **based on the provided `docker-compose.yml`** (no S3/Garage).
 
 ---
 
@@ -33,8 +32,8 @@ The reverse proxy binds to `:80`/`:443` on **IPv6** (`[::]`) and supports dual�
 ```mermaid
 flowchart TD
     subgraph Proxy
-        T[Traefik v3.6 (host network)]
-        TM[Traefik Middlewares (labels provider)]
+        T[Traefik v3.6 - host network]
+        TM[Traefik Middlewares - labels provider]
     end
 
     subgraph App
