@@ -223,7 +223,7 @@ services:
     networks:
       - app-net
 
-  # ------------------------------------------------
+# ------------------------------------------------
   # ONLYOFFICE Document Server
   # ------------------------------------------------
   onlyoffice:
@@ -233,28 +233,47 @@ services:
       - TZ=${TZ}
       - JWT_ENABLED=true
       - JWT_SECRET=${ONLYOFFICE_JWT_SECRET}
-      - JWT_HEADER=Authorization
+      - USE_UNAUTHORIZED_STORAGE=true  # good for testing, but replace later
+      
+      # Allow HumHub (frontend) as trusted storage/origin
+      - DS_STORAGE_ALLOWED_STORAGE_ORIGINS=https://${HUMHUB_HOST}
+
+      # Make URL awareness explicit (helps with reverse proxy/HTTPS awareness)
+      - DS_GENERAL_SERVER_URL=https://${ONLYOFFICE_HOST}
+      - DS_GENERAL_USE_FORWARDED_HEADERS=true
+
     volumes:
       - onlyoffice_data:/var/lib/onlyoffice
       - onlyoffice_log:/var/log/onlyoffice
     networks:
-      - app-net
       - proxy
+
     labels:
       - traefik.enable=true
 
-      # HTTP (for ACME challenge)
+      # HTTP → HTTPS redirect
       - traefik.http.routers.onlyoffice-http.rule=Host(`${ONLYOFFICE_HOST}`)
       - traefik.http.routers.onlyoffice-http.entrypoints=web
       - traefik.http.routers.onlyoffice-http.middlewares=redirect-to-https
       - traefik.http.routers.onlyoffice-http.service=onlyoffice
 
-      # HTTPS
+      # HTTPS router
       - traefik.http.routers.onlyoffice.rule=Host(`${ONLYOFFICE_HOST}`)
       - traefik.http.routers.onlyoffice.entrypoints=websecure
       - traefik.http.routers.onlyoffice.tls.certresolver=letsencrypt
-      - traefik.http.routers.onlyoffice.middlewares=security-headers,compress
+      - traefik.http.routers.onlyoffice.service=onlyoffice
+      - traefik.http.routers.onlyoffice.middlewares=onlyoffice-chain
+
+      # service port
       - traefik.http.services.onlyoffice.loadbalancer.server.port=80
+
+      # middleware chain
+      - traefik.http.middlewares.onlyoffice-chain.chain.middlewares=onlyoffice-headers,compress
+
+      # REQUIRED headers for OnlyOffice
+#      - traefik.http.middlewares.onlyoffice-headers.headers.customrequestheaders.X-Forwarded-Proto=https
+#      - traefik.http.middlewares.onlyoffice-headers.headers.customrequestheaders.X-Forwarded-Host=${ONLYOFFICE_HOST}
+#      - traefik.http.middlewares.onlyoffice-headers.headers.customrequestheaders.X-Forwarded-For=127.0.0.1
 
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://localhost/healthcheck || exit 1"]
